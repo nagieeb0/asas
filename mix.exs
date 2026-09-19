@@ -54,7 +54,10 @@ defmodule Asas.MixProject do
       {:phoenix_live_view, "~> 1.0", optional: true},
       {:gettext, "~> 0.26 or ~> 1.0", optional: true},
       {:ecto_sql, "~> 3.12", optional: true},
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      # Test-only. Asas.Release's advisory lock can only be checked against a real
+      # Postgres, and ecto_sql leaves the driver to the host app.
+      {:postgrex, ">= 0.0.0", only: :test}
     ]
   end
 end

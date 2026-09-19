@@ -29,11 +29,22 @@ defmodule Asas.Release do
   correct, since the loser of the race takes the lock after the winner has
   finished.
 
-  ## Why `to_regclass`
+  ## Why `to_regclass`, in two statements
 
   The very first boot runs this immediately after the migration that creates
   the table. On any path where that has not happened, "no table" has to mean
   "not seeded" rather than an exception that takes the container down.
+
+  The check is deliberately two queries. Folding it into one
+
+      SELECT CASE WHEN to_regclass(...) IS NULL THEN false
+                  ELSE EXISTS (SELECT 1 FROM t) END
+
+  reads as though the `CASE` guards the `SELECT`. It does not: Postgres resolves
+  relations when it parses the statement, before any branch is evaluated, so the
+  whole query fails with `relation "t" does not exist` and the guard never gets
+  a chance to run. That one-statement form shipped here and was only caught by a
+  test against a real database.
 
   Migrations run on every boot because they are versioned and know what they
   have already applied. The seed has no such record, so `seeded_check` — the
@@ -101,17 +112,40 @@ defmodule Asas.Release do
       end
 
       if @seeded_check do
+        # Two statements, not one. The very first boot runs this right after the
+        # migration that creates the table, and on any path where that has not
+        # happened "no table" must mean "not seeded" rather than an exception
+        # that takes the container down.
+        #
+        # This used to be a single CASE ... to_regclass(...) IS NULL ... ELSE
+        # EXISTS (SELECT 1 FROM t) END, which reads as if the CASE guards the
+        # SELECT. It does not. Postgres resolves relations when it parses the
+        # statement, before any branch is evaluated, so the whole query fails
+        # with `relation "t" does not exist` and the guard never runs:
+        #
+        #     ERROR:  relation "a_table_that_is_never_created" does not exist
+        #
+        # Splitting it is the only way the check can actually tolerate a missing
+        # table. The second query is skipped entirely when the first says no.
         defp seeded?(repo) do
-          # to_regclass, not a plain SELECT: the very first boot runs this right
-          # after the migration that creates the table, and on any path where
-          # that has not happened "no table" must mean "not seeded" rather than
-          # an exception that takes the container down.
-          query = """
-          SELECT CASE WHEN to_regclass('public.#{@seeded_check}') IS NULL THEN false
-                      ELSE EXISTS (SELECT 1 FROM #{@seeded_check}) END
-          """
+          exists =
+            Ecto.Adapters.SQL.query!(
+              repo,
+              "SELECT to_regclass($1) IS NOT NULL",
+              ["public.#{@seeded_check}"]
+            )
 
-          match?(%{rows: [[true]]}, Ecto.Adapters.SQL.query!(repo, query))
+          if match?(%{rows: [[true]]}, exists) do
+            match?(
+              %{rows: [[true]]},
+              Ecto.Adapters.SQL.query!(
+                repo,
+                "SELECT EXISTS (SELECT 1 FROM #{@seeded_check})"
+              )
+            )
+          else
+            false
+          end
         end
       else
         # No marker table named: the lock still makes concurrent boots safe, but

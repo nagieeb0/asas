@@ -56,10 +56,13 @@ defmodule Asas.Akedly do
   @spec challenge(keyword) :: {:ok, map} | {:error, map}
   def challenge(opts \\ []) do
     with {:ok, cfg} <- config(opts) do
-      Req.get(cfg[:base_url] <> "/transactions/challenge",
-        params: [APIKey: cfg[:api_key], pipelineID: cfg[:pipeline_id]],
-        receive_timeout: @timeout,
-        retry: false
+      Req.get(
+        cfg[:base_url] <> "/transactions/challenge",
+        req_opts(cfg,
+          params: [APIKey: cfg[:api_key], pipelineID: cfg[:pipeline_id]],
+          receive_timeout: @timeout,
+          retry: false
+        )
       )
       |> handle()
     end
@@ -75,17 +78,20 @@ defmodule Asas.Akedly do
   @spec send_otp(binary, map, binary | nil, binary | nil, keyword) :: {:ok, map} | {:error, map}
   def send_otp(phone_number, pow, turnstile, end_user_ip, opts \\ []) do
     with {:ok, cfg} <- config(opts) do
-      Req.post(cfg[:base_url] <> "/transactions/send",
-        headers: [{"x-end-user-ip", end_user_ip || ""}],
-        json: %{
-          "APIKey" => cfg[:api_key],
-          "pipelineID" => cfg[:pipeline_id],
-          "verificationAddress" => %{"phoneNumber" => phone_number},
-          "powSolution" => pow,
-          "turnstileToken" => turnstile
-        },
-        receive_timeout: @timeout,
-        retry: false
+      Req.post(
+        cfg[:base_url] <> "/transactions/send",
+        req_opts(cfg,
+          headers: [{"x-end-user-ip", end_user_ip || ""}],
+          json: %{
+            "APIKey" => cfg[:api_key],
+            "pipelineID" => cfg[:pipeline_id],
+            "verificationAddress" => %{"phoneNumber" => phone_number},
+            "powSolution" => pow,
+            "turnstileToken" => turnstile
+          },
+          receive_timeout: @timeout,
+          retry: false
+        )
       )
       |> handle()
     end
@@ -95,10 +101,13 @@ defmodule Asas.Akedly do
   @spec verify(binary, binary | integer, keyword) :: {:ok, map} | {:error, map}
   def verify(transaction_req_id, otp, opts \\ []) do
     with {:ok, cfg} <- config(opts) do
-      Req.post(cfg[:base_url] <> "/transactions/verify",
-        json: %{"transactionReqID" => transaction_req_id, "otp" => to_string(otp)},
-        receive_timeout: @timeout,
-        retry: false
+      Req.post(
+        cfg[:base_url] <> "/transactions/verify",
+        req_opts(cfg,
+          json: %{"transactionReqID" => transaction_req_id, "otp" => to_string(otp)},
+          receive_timeout: @timeout,
+          retry: false
+        )
       )
       |> handle()
     end
@@ -137,6 +146,14 @@ defmodule Asas.Akedly do
       {:error, %{"status" => "error", "code" => "AKEDLY_NOT_CONFIGURED"}}
     end
   end
+
+  # `req_options` was already lifted out of config by config/1 and then never
+  # used, so a host could set it and watch nothing happen. It is merged UNDER our
+  # own options, the same way Asas.Moyasar does it: a config file may swap the
+  # transport (which is how this is tested without a network, and how it would sit
+  # behind an egress proxy) and may not redirect an authenticated request, change
+  # its body, or strip its timeout.
+  defp req_opts(cfg, own), do: Keyword.merge(cfg[:req_options] || [], own)
 
   defp present?(value), do: is_binary(value) and value != ""
 end

@@ -14,11 +14,14 @@ defmodule Asas.Storage.S3 do
 
   @impl true
   def put(key, binary, content_type) do
-    case Req.put(object_url(key),
-           body: binary,
-           headers: [{"content-type", content_type}],
-           aws_sigv4: sigv4(),
-           retry: :transient
+    case Req.put(
+           object_url(key),
+           req_opts(
+             body: binary,
+             headers: [{"content-type", content_type}],
+             aws_sigv4: sigv4(),
+             retry: :transient
+           )
          ) do
       {:ok, %{status: status}} when status in 200..299 -> {:ok, key}
       {:ok, %{status: status, body: body}} -> {:error, {:http, status, body}}
@@ -28,7 +31,7 @@ defmodule Asas.Storage.S3 do
 
   @impl true
   def get(key) do
-    case Req.get(object_url(key), aws_sigv4: sigv4(), retry: :transient) do
+    case Req.get(object_url(key), req_opts(aws_sigv4: sigv4(), retry: :transient)) do
       {:ok, %{status: 200, body: body}} -> {:ok, body}
       {:ok, %{status: 404}} -> {:error, :enoent}
       {:ok, %{status: status, body: body}} -> {:error, {:http, status, body}}
@@ -38,7 +41,7 @@ defmodule Asas.Storage.S3 do
 
   @impl true
   def delete(key) do
-    case Req.delete(object_url(key), aws_sigv4: sigv4(), retry: :transient) do
+    case Req.delete(object_url(key), req_opts(aws_sigv4: sigv4(), retry: :transient)) do
       {:ok, %{status: status}} when status in [200, 204, 404] -> :ok
       {:ok, %{status: status}} -> {:error, {:http, status}}
       {:error, reason} -> {:error, reason}
@@ -58,6 +61,11 @@ defmodule Asas.Storage.S3 do
       region: cfg(:region) || "auto"
     ]
   end
+
+  # Merged UNDER our own options, as in Asas.Akedly and Asas.Moyasar: a host may
+  # swap the transport — which is the only way this adapter can be tested without
+  # a bucket — and may not change the signing, the body or the retry policy.
+  defp req_opts(own), do: Keyword.merge(cfg(:req_options) || [], own)
 
   defp cfg(key), do: Asas.Storage.config([])[key]
 end

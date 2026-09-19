@@ -9,6 +9,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ["5432:5432"]
+
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +33,9 @@ jobs:
 
     env:
       MIX_ENV: test
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
 
     steps:
       - uses: actions/checkout@v4
@@ -48,5 +61,3 @@ jobs:
 
       - run: mix test
 
-# ponytail: no Postgres service yet — nothing in the suite touches a database.
-# Add it in the same commit as the advisory-lock seed test that needs it.
