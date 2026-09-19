@@ -118,6 +118,77 @@ defmodule Asas.Akedly do
   def verified?(%{"status" => "success", "data" => %{"verified" => true}}), do: true
   def verified?(_body), do: false
 
+  @doc """
+  Verifies a Svix-style webhook signature, as Akedly sends it.
+
+  Hand-rolled twice in this portfolio with incompatible results —
+  `{:error, :bad_signature}` in one, the bare atom `:invalid` in the other — for
+  the same algorithm and the same 5-minute window. This is keshfa's version, which
+  was the complete one.
+
+  `signature` may carry several space-separated `v1,<sig>` pairs; a delivery is
+  accepted if any of them matches, which is how Svix rotates a secret without
+  dropping messages. The comparison is constant-time, and the timestamp is checked
+  before the MAC so a replay costs nothing.
+
+  The secret is read from `webhook_secret` in the same config the client uses, and
+  accepts either the raw base64 or the `whsec_`-prefixed form.
+  """
+  @spec verify_webhook(binary, binary, binary, binary, keyword) ::
+          :ok | {:error, atom}
+  def verify_webhook(id, timestamp, signature, raw_body, opts \\ [])
+
+  def verify_webhook(id, timestamp, signature, raw_body, opts)
+      when is_binary(id) and is_binary(timestamp) and is_binary(signature) do
+    with {:ok, secret} <- webhook_secret(opts),
+         :ok <- fresh_timestamp(timestamp) do
+      expected =
+        :crypto.mac(:hmac, :sha256, secret, "#{id}.#{timestamp}.#{raw_body}")
+        |> Base.encode64()
+
+      provided =
+        signature
+        |> String.split(" ", trim: true)
+        |> Enum.map(fn part -> part |> String.split(",", parts: 2) |> List.last() end)
+
+      if Enum.any?(provided, &Plug.Crypto.secure_compare(&1, expected)),
+        do: :ok,
+        else: {:error, :bad_signature}
+    end
+  end
+
+  def verify_webhook(_, _, _, _, _), do: {:error, :missing_headers}
+
+  @doc "The configured webhook secret, decoded. `whsec_`-prefixed or raw base64."
+  @spec webhook_secret(keyword) :: {:ok, binary} | {:error, atom}
+  def webhook_secret(opts \\ []) do
+    otp_app = opts[:otp_app] || Application.get_env(:asas, :otp_app)
+    cfg = Keyword.merge(Application.get_env(otp_app, __MODULE__, []), opts)
+
+    case cfg[:webhook_secret] do
+      "whsec_" <> b64 -> decode_secret(b64)
+      s when is_binary(s) and s != "" -> decode_secret(s)
+      _ -> {:error, :not_configured}
+    end
+  end
+
+  defp decode_secret(b64) do
+    case Base.decode64(b64) do
+      {:ok, secret} -> {:ok, secret}
+      :error -> {:error, :bad_secret}
+    end
+  end
+
+  # Reject replays and clock-skewed deliveries outside a 5-minute window.
+  defp fresh_timestamp(timestamp) do
+    with {ts, ""} <- Integer.parse(timestamp),
+         true <- abs(System.system_time(:second) - ts) <= 300 do
+      :ok
+    else
+      _ -> {:error, :stale_timestamp}
+    end
+  end
+
   # `with_status: true` returns {:ok, status, body} instead of {:ok, body}.
   #
   # Four of the copies of this client read the body and nothing else, which is the

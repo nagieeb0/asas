@@ -185,6 +185,71 @@ defmodule Asas.AkedlyTest do
     end
   end
 
+  describe "verify_webhook/5" do
+    defp sign(secret_b64, id, ts, body) do
+      {:ok, secret} = Base.decode64(secret_b64)
+      :crypto.mac(:hmac, :sha256, secret, "#{id}.#{ts}.#{body}") |> Base.encode64()
+    end
+
+    setup do
+      secret_b64 = Base.encode64("super-secret-bytes")
+      Application.put_env(:asas, Akedly, webhook_secret: "whsec_" <> secret_b64)
+      %{secret_b64: secret_b64, ts: to_string(System.system_time(:second))}
+    end
+
+    test "accepts a current, correctly signed delivery", %{secret_b64: s, ts: ts} do
+      sig = sign(s, "msg_1", ts, "{}")
+      assert :ok = Akedly.verify_webhook("msg_1", ts, "v1," <> sig, "{}")
+    end
+
+    test "accepts when any of several space-separated signatures matches", %{
+      secret_b64: s,
+      ts: ts
+    } do
+      good = sign(s, "msg_1", ts, "{}")
+      header = "v1,AAAAinvalid v1," <> good
+
+      assert :ok = Akedly.verify_webhook("msg_1", ts, header, "{}")
+    end
+
+    test "rejects a tampered body", %{secret_b64: s, ts: ts} do
+      sig = sign(s, "msg_1", ts, "{}")
+
+      assert {:error, :bad_signature} =
+               Akedly.verify_webhook("msg_1", ts, "v1," <> sig, ~s({"amount":1}))
+    end
+
+    test "rejects a replay outside the five-minute window", %{secret_b64: s} do
+      old = to_string(System.system_time(:second) - 301)
+      sig = sign(s, "msg_1", old, "{}")
+
+      assert {:error, :stale_timestamp} = Akedly.verify_webhook("msg_1", old, "v1," <> sig, "{}")
+    end
+
+    test "rejects a non-numeric timestamp rather than raising" do
+      assert {:error, :stale_timestamp} =
+               Akedly.verify_webhook("msg_1", "yesterday", "v1,x", "{}")
+    end
+
+    test "missing headers are refused before anything is computed" do
+      assert {:error, :missing_headers} = Akedly.verify_webhook(nil, nil, nil, "{}")
+    end
+
+    test "an unconfigured secret is not a signature failure" do
+      Application.put_env(:asas, Akedly, [])
+      ts = to_string(System.system_time(:second))
+
+      assert {:error, :not_configured} = Akedly.verify_webhook("msg_1", ts, "v1,x", "{}")
+    end
+
+    test "accepts the raw base64 form as well as whsec_", %{secret_b64: s, ts: ts} do
+      Application.put_env(:asas, Akedly, webhook_secret: s)
+      sig = sign(s, "msg_1", ts, "{}")
+
+      assert :ok = Akedly.verify_webhook("msg_1", ts, "v1," <> sig, "{}")
+    end
+  end
+
   describe "with_status" do
     test "returns the upstream status for callers that proxy it to a browser" do
       configure(fn conn ->
