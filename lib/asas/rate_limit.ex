@@ -37,7 +37,17 @@ defmodule Asas.RateLimit do
     window_ms = opts[:window_ms] || @window_ms
     now = System.system_time(:millisecond)
     window = div(now, window_ms)
-    count = :ets.update_counter(@table, {key, window}, {2, 1}, {{key, window}, 0})
+    # The default tuple seeds the counter AND an absolute expiry, so a row always
+    # knows when it may be swept. Two windows of slack keeps a hit that lands on a
+    # boundary from being dropped early.
+    #
+    # The expiry has to be stored rather than derived, because window_ms is a
+    # per-call option: a row written with `window_ms: 1` gets a window number
+    # around now/1 while a sweep driven by the GenServer's own 60s window compares
+    # against now/60_000. The row is never smaller, so it was never deleted — an
+    # unbounded, caller-controlled table. Lifted from matheel, which had it right.
+    expires_at = (window + 2) * window_ms
+    count = :ets.update_counter(@table, {key, window}, {2, 1}, {{key, window}, 0, expires_at})
 
     if count > limit do
       {:error, max(1, div((window + 1) * window_ms - now, 1000))}
@@ -66,10 +76,11 @@ defmodule Asas.RateLimit do
   end
 
   @impl true
-  def handle_info(:sweep, %{window_ms: window_ms} = state) do
-    old = div(System.system_time(:millisecond), window_ms) - 1
-    # rows are {{key, window}, count}; drop anything older than the previous window.
-    :ets.select_delete(@table, [{{{:_, :"$1"}, :_}, [{:<, :"$1", old}], [true]}])
+  def handle_info(:sweep, state) do
+    now = System.system_time(:millisecond)
+    # rows are {{key, window}, count, expires_at}; absolute time, so this is
+    # correct whatever window_ms each caller used.
+    :ets.select_delete(@table, [{{:_, :_, :"$1"}, [{:<, :"$1", now}], [true]}])
     {:noreply, state}
   end
 end

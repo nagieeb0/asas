@@ -93,6 +93,27 @@ defmodule AsasTest do
   end
 
   describe "RateLimit" do
+    test "REGRESSION: a short per-call window is still swept" do
+      # hit/3 takes window_ms per call, but the sweep used to derive staleness
+      # from the GenServer's own window. A row written with window_ms: 1 got a
+      # window number around now/1 and was compared against now/60_000, so it was
+      # never smaller and never deleted — an unbounded table whose keys an
+      # attacker chooses. The expiry is stored absolutely now.
+      # The other RateLimit test may already own the named process; either way the
+      # table exists after this.
+      _ = start_supervised({Asas.RateLimit, window_ms: 60_000})
+      key = "sweep:#{System.unique_integer([:positive])}"
+
+      assert {:ok, _} = Asas.RateLimit.hit(key, 1, window_ms: 1)
+      assert present?(key)
+
+      Process.sleep(10)
+      send(Asas.RateLimit, :sweep)
+      _ = :sys.get_state(Asas.RateLimit)
+
+      refute present?(key)
+    end
+
     setup do
       start_supervised!({Asas.RateLimit, window_ms: 60_000})
       :ok
@@ -221,5 +242,11 @@ defmodule AsasTest do
                "Asas.Release did not define #{fun}/#{arity}"
       end
     end
+  end
+
+  defp present?(key) do
+    :asas_rate_limit
+    |> :ets.tab2list()
+    |> Enum.any?(fn {{k, _window}, _count, _expires} -> k == key end)
   end
 end
