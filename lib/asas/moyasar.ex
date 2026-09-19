@@ -96,12 +96,23 @@ defmodule Asas.Moyasar do
   #     config :my_app, Asas.Moyasar, secret_key: System.get_env("MOYASAR_SECRET_KEY")
   #
   # Nothing else about the client changed.
+  # The key defaults to this module, but a host that already keeps its gateway
+  # settings somewhere else can say so rather than migrate. raqeemi holds
+  # `config :raqeemi, :billing` — which also carries `backend`, `paused`,
+  # `free_mode`, `prices` and `callback_url`, is read and written by nine test
+  # files, and is pinned as a literal string by one of them. Renaming that for a
+  # shared HTTP client would be a migration through a money path in exchange for
+  # nothing. The library bends instead.
+  #
+  #     config :asas, otp_app: :raqeemi, moyasar_config_key: :billing
   @doc false
   @spec config() :: keyword()
   def config do
     otp_app = Application.get_env(:asas, :otp_app)
-    Application.get_env(otp_app, __MODULE__, [])
+    Application.get_env(otp_app, config_key(), [])
   end
+
+  defp config_key, do: Application.get_env(:asas, :moyasar_config_key, __MODULE__)
 
   @doc """
   Whether a secret key is present. **False on every machine today.**

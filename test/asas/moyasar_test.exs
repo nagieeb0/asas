@@ -148,6 +148,31 @@ defmodule Asas.MoyasarTest do
     end
   end
 
+  describe "moyasar_config_key" do
+    test "a host can keep its gateway settings under a key it already owns" do
+      Application.put_env(:asas, :moyasar_config_key, :billing)
+      on_exit(fn -> Application.delete_env(:asas, :moyasar_config_key) end)
+
+      Application.put_env(:asas, :billing,
+        secret_key: "sk_test_elsewhere",
+        base_url: "https://api.moyasar.test/v1",
+        req_options: [
+          plug: fn conn ->
+            assert ["Basic " <> encoded] = Plug.Conn.get_req_header(conn, "authorization")
+            assert Base.decode64!(encoded) == "sk_test_elsewhere:"
+            Req.Test.json(conn, %{"id" => "inv_elsewhere"})
+          end
+        ]
+      )
+
+      # Nothing under Asas.Moyasar at all — the whole point.
+      Application.put_env(:asas, Moyasar, [])
+
+      assert Moyasar.configured?()
+      assert {:ok, %{"id" => "inv_elsewhere"}} = Moyasar.create_invoice(%{"amount" => 100})
+    end
+  end
+
   describe "the card-shaped refusals raqeemi carried and aethel dropped" do
     test "charge_token refuses anything that is not a token_ string or a positive amount" do
       configure(fn _conn -> flunk("a refused charge must not produce a request") end)
