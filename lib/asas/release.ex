@@ -1,0 +1,138 @@
+defmodule Asas.Release do
+  @moduledoc """
+  Migrate and seed from inside a release, where there is no Mix.
+
+      defmodule MyApp.Release do
+        use Asas.Release, otp_app: :my_app, seeded_check: "menu_categories"
+      end
+
+  then in the entrypoint (or `Application.start/2` on a platform with no
+  release-command hook):
+
+      MyApp.Release.migrate()
+      MyApp.Release.seed()
+
+  ## Why `seed/0` needs an advisory lock
+
+  "Skip when populated" is a read followed by a write, and on the very first
+  deploy that is a race. Two containers starting together — a rolling deploy,
+  or a crash loop restarting while the replacement boots — both read an empty
+  table, both decide to seed, and the app opens with every row listed twice.
+  That is not hypothetical: it is what happened on one of these apps' first
+  successful boot, 28 categories for 14 names.
+
+  `pg_try_advisory_lock` closes it. Whoever takes the lock seeds; whoever
+  cannot does not wait and does not seed, because the holder is doing the
+  identical work. The lock is session-scoped, so Postgres drops it if the
+  connection dies and a container killed mid-seed cannot wedge the next one.
+  The check is repeated *inside* the lock — that is what makes the pair
+  correct, since the loser of the race takes the lock after the winner has
+  finished.
+
+  ## Why `to_regclass`
+
+  The very first boot runs this immediately after the migration that creates
+  the table. On any path where that has not happened, "no table" has to mean
+  "not seeded" rather than an exception that takes the container down.
+
+  Migrations run on every boot because they are versioned and know what they
+  have already applied. The seed has no such record, so `seeded_check` — the
+  name of a table that is non-empty once seeding has happened — is its version
+  table.
+  """
+
+  defmacro __using__(opts) do
+    otp_app = Keyword.fetch!(opts, :otp_app)
+    seeded_check = Keyword.get(opts, :seeded_check)
+    seed_file = Keyword.get(opts, :seed_file, "priv/repo/seeds.exs")
+
+    quote do
+      @app unquote(otp_app)
+      @seeded_check unquote(seeded_check)
+      @seed_file unquote(seed_file)
+      # Any stable 64-bit integer; phash2 over the app name keeps it stable
+      # across builds without anyone having to remember a magic number.
+      @seed_lock :erlang.phash2({unquote(otp_app), :release_seed}, 2_147_483_647)
+
+      def migrate do
+        load_app()
+
+        for repo <- repos() do
+          {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :up, all: true))
+        end
+
+        :ok
+      end
+
+      def rollback(repo, version) do
+        load_app()
+        {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :down, to: version))
+      end
+
+      def seed do
+        load_app()
+        for repo <- repos(), do: {:ok, _, _} = Ecto.Migrator.with_repo(repo, &seed_once/1)
+        :ok
+      end
+
+      # Two gates, cheapest first. seeded?/1 is one EXISTS against an index; on
+      # every boot after the first it answers in a millisecond and nothing else
+      # runs — in particular not Code.eval_file/1, which recompiles the seed
+      # script from source every time it is reached.
+      defp seed_once(repo) do
+        cond do
+          seeded?(repo) ->
+            IO.puts("seed: already applied — skipped")
+
+          not lock(repo) ->
+            IO.puts("seed: another node holds the lock — skipped")
+
+          true ->
+            try do
+              if seeded?(repo) do
+                IO.puts("seed: applied by another node while waiting — skipped")
+              else
+                @app |> Application.app_dir(@seed_file) |> Code.eval_file()
+              end
+            after
+              Ecto.Adapters.SQL.query!(repo, "SELECT pg_advisory_unlock($1)", [@seed_lock])
+            end
+        end
+      end
+
+      if @seeded_check do
+        defp seeded?(repo) do
+          # to_regclass, not a plain SELECT: the very first boot runs this right
+          # after the migration that creates the table, and on any path where
+          # that has not happened "no table" must mean "not seeded" rather than
+          # an exception that takes the container down.
+          query = """
+          SELECT CASE WHEN to_regclass('public.#{@seeded_check}') IS NULL THEN false
+                      ELSE EXISTS (SELECT 1 FROM #{@seeded_check}) END
+          """
+
+          match?(%{rows: [[true]]}, Ecto.Adapters.SQL.query!(repo, query))
+        end
+      else
+        # No marker table named: the lock still makes concurrent boots safe, but
+        # the seed script itself has to be idempotent.
+        defp seeded?(_repo), do: false
+      end
+
+      defp lock(repo) do
+        match?(
+          %{rows: [[true]]},
+          Ecto.Adapters.SQL.query!(repo, "SELECT pg_try_advisory_lock($1)", [@seed_lock])
+        )
+      end
+
+      defp repos, do: Application.fetch_env!(@app, :ecto_repos)
+
+      defp load_app do
+        # Many platforms require SSL when connecting to the database.
+        Application.ensure_all_started(:ssl)
+        Application.ensure_loaded(@app)
+      end
+    end
+  end
+end
