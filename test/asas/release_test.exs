@@ -110,6 +110,33 @@ defmodule Asas.ReleaseTest do
     end
   end
 
+  describe "seeded_where" do
+    test "a predicate narrows what counts as seeded" do
+      defmodule PredicateRelease do
+        @moduledoc false
+        use Asas.Release,
+          otp_app: :asas,
+          seeded_check: "asas_seed_marker",
+          seeded_where: "note = 'root'",
+          seed_file: "priv/test_seeds.exs"
+      end
+
+      # A row that does not satisfy the predicate must not count. This is
+      # my_coffee's case exactly: the users table fills up with ordinary
+      # signups, and only a root user means the seed has run.
+      {:ok, _, _} =
+        Ecto.Migrator.with_repo(Asas.TestRepo, fn repo ->
+          SQL.query!(repo, "INSERT INTO asas_seed_marker (note) VALUES ($1)", ["someone-else"])
+        end)
+
+      assert marker_count() == 1
+
+      # Still "not seeded", so the script runs.
+      assert :ok = PredicateRelease.seed()
+      assert marker_count() == 2
+    end
+  end
+
   describe "the advisory lock" do
     test "is released after seeding, so the next boot is not blocked forever" do
       assert :ok = Release.seed()
