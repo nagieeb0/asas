@@ -185,6 +185,36 @@ defmodule Asas.AkedlyTest do
     end
   end
 
+  describe "with_status" do
+    test "returns the upstream status for callers that proxy it to a browser" do
+      configure(fn conn ->
+        conn
+        |> Plug.Conn.put_status(207)
+        |> Req.Test.json(%{"status" => "success", "data" => %{}})
+      end)
+
+      assert {:ok, 207, %{"status" => "success"}} = Akedly.challenge(with_status: true)
+      assert {:ok, %{"status" => "success"}} = Akedly.challenge()
+    end
+
+    test "a non-success map is still {:ok, status, body}, not an error, when asked" do
+      configure(fn conn ->
+        conn
+        |> Plug.Conn.put_status(400)
+        |> Req.Test.json(%{"status" => "error", "message" => "bad otp"})
+      end)
+
+      assert {:ok, 400, %{"message" => "bad otp"}} = Akedly.verify("t", "0", with_status: true)
+      assert {:error, %{"message" => "bad otp"}} = Akedly.verify("t", "0")
+    end
+
+    test "a transport failure is an error either way — there is no status to report" do
+      configure(fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
+
+      assert {:error, %{"code" => "AKEDLY_UNREACHABLE"}} = Akedly.challenge(with_status: true)
+    end
+  end
+
   describe "verified?/1" do
     test "only an explicit success+verified is true" do
       assert Akedly.verified?(%{"status" => "success", "data" => %{"verified" => true}})

@@ -64,7 +64,7 @@ defmodule Asas.Akedly do
           retry: false
         )
       )
-      |> handle()
+      |> handle(cfg)
     end
   end
 
@@ -93,7 +93,7 @@ defmodule Asas.Akedly do
           retry: false
         )
       )
-      |> handle()
+      |> handle(cfg)
     end
   end
 
@@ -109,7 +109,7 @@ defmodule Asas.Akedly do
           retry: false
         )
       )
-      |> handle()
+      |> handle(cfg)
     end
   end
 
@@ -118,17 +118,36 @@ defmodule Asas.Akedly do
   def verified?(%{"status" => "success", "data" => %{"verified" => true}}), do: true
   def verified?(_body), do: false
 
-  defp handle({:ok, %Req.Response{body: %{"status" => "success"} = body}}), do: {:ok, body}
-  defp handle({:ok, %Req.Response{body: body}}) when is_map(body), do: {:error, body}
+  # `with_status: true` returns {:ok, status, body} instead of {:ok, body}.
+  #
+  # Four of the copies of this client read the body and nothing else, which is the
+  # right default: the status is transport detail and a caller that acts on it is
+  # usually acting on the wrong thing. But ghadwa and khatm proxy this endpoint to
+  # the browser and forward Akedly's own status with it, so for them the status is
+  # the payload. Discarding it would have been a behaviour change on a live OTP
+  # route, which is a bad reason to make someone keep a 95-line copy.
+  defp handle(result, cfg) do
+    case {result, cfg[:with_status]} do
+      {{:ok, %Req.Response{status: s, body: %{"status" => "success"} = body}}, true} ->
+        {:ok, s, body}
 
-  defp handle({:ok, %Req.Response{status: status, body: body}}) do
-    Logger.warning("akedly: unexpected #{status}: #{inspect(body)}")
-    {:error, %{"status" => "error", "code" => "UPSTREAM_#{status}"}}
-  end
+      {{:ok, %Req.Response{body: %{"status" => "success"} = body}}, _} ->
+        {:ok, body}
 
-  defp handle({:error, reason}) do
-    Logger.error("akedly: request failed: #{inspect(reason)}")
-    {:error, %{"status" => "error", "code" => "AKEDLY_UNREACHABLE"}}
+      {{:ok, %Req.Response{status: s, body: body}}, true} when is_map(body) ->
+        {:ok, s, body}
+
+      {{:ok, %Req.Response{body: body}}, _} when is_map(body) ->
+        {:error, body}
+
+      {{:ok, %Req.Response{status: status, body: body}}, _} ->
+        Logger.warning("akedly: unexpected #{status}: #{inspect(body)}")
+        {:error, %{"status" => "error", "code" => "UPSTREAM_#{status}"}}
+
+      {{:error, reason}, _} ->
+        Logger.error("akedly: request failed: #{inspect(reason)}")
+        {:error, %{"status" => "error", "code" => "AKEDLY_UNREACHABLE"}}
+    end
   end
 
   defp config(opts) do
@@ -141,7 +160,7 @@ defmodule Asas.Akedly do
          base_url: cfg[:base_url] || @base,
          api_key: cfg[:api_key],
          pipeline_id: cfg[:pipeline_id]
-       ] ++ Keyword.take(cfg, [:req_options])}
+       ] ++ Keyword.take(cfg, [:req_options, :with_status])}
     else
       {:error, %{"status" => "error", "code" => "AKEDLY_NOT_CONFIGURED"}}
     end
