@@ -34,6 +34,12 @@ defmodule Asas.Locale do
   without it keeps the choice.
   """
 
+  # ponytail: plug, phoenix_live_view and gettext are optional deps, so a host that
+  # has none of them would otherwise eat ten undefined-module warnings — and break
+  # outright under --warnings-as-errors. Every Phoenix host has all three; this is
+  # for the ones that are not Phoenix hosts.
+  @compile {:no_warn_undefined, [Plug.Conn, Phoenix.Component, Gettext]}
+
   @session_key "locale"
   @rtl ~w(ar he fa ur)
 
