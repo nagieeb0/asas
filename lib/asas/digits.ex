@@ -53,7 +53,11 @@ defmodule Asas.Digits do
     "۸" => "8",
     "۹" => "9",
     "\u066B" => ".",
-    "\u066C" => ",",
+    # U+066C, the Arabic thousands separator, is DROPPED rather than translated.
+    # Mapping it to "," looks right and silently corrupts money: "١٬٥٠٠" would
+    # fold to "1,500", and `Decimal.parse/1` stops at the comma and returns 1.
+    # A 1,500 total becomes 1. Lifted from my_coffee, which paid for this first.
+    "\u066C" => "",
     "\u200E" => "",
     "\u200F" => "",
     "\u061C" => "",

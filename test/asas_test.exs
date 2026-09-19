@@ -5,7 +5,19 @@ defmodule AsasTest do
     test "folds Arabic and Persian digits, and the separators" do
       assert Asas.Digits.latin("٠١٢٣٤٥٦٧٨٩") == "0123456789"
       assert Asas.Digits.latin("۰۱۲۳۴۵۶۷۸۹") == "0123456789"
-      assert Asas.Digits.latin("٣٬٤٥٠٫٥٠") == "3,450.50"
+      # The thousands mark is dropped, not translated — see the regression below.
+      assert Asas.Digits.latin("٣٬٤٥٠٫٥٠") == "3450.50"
+    end
+
+    test "REGRESSION: the thousands separator must not become a comma" do
+      # Mapping U+066C to "," reads correctly and destroys money silently:
+      # Decimal.parse/1 stops at the comma, so ١٬٥٠٠ arrives as 1.
+      folded = Asas.Digits.latin("١٬٥٠٠")
+
+      assert folded == "1500"
+      assert {decimal, ""} = Decimal.parse(folded)
+      assert Decimal.equal?(decimal, Decimal.new(1500))
+      refute folded =~ ","
     end
 
     test "strips the bidi marks that ride along on a copy out of an RTL page" do
