@@ -58,6 +58,13 @@ defmodule Asas.Release do
     seeded_where = Keyword.get(opts, :seeded_where)
     seed_file = Keyword.get(opts, :seed_file, "priv/repo/seeds.exs")
 
+    # Folded here, where `seeded_where` is a plain value, rather than left as an
+    # `if` inside the quote. Generated as `" WHERE " <> @seeded_where`, the type
+    # checker reads the dead branch of a host app that passes no predicate as
+    # `nil <> binary()` and every such app compiles with a warning it cannot fix
+    # from its own source — which is fatal under `--warnings-as-errors`.
+    seeded_where_sql = if seeded_where, do: " WHERE " <> seeded_where, else: ""
+
     quote do
       @app unquote(otp_app)
       @seeded_check unquote(seeded_check)
@@ -65,7 +72,7 @@ defmodule Asas.Release do
       # but "a root user exists", because the table is non-empty the moment
       # anyone signs up. Without this the gate would report seeded before the
       # seed had run.
-      @seeded_where unquote(seeded_where)
+      @seeded_where_sql unquote(seeded_where_sql)
       @seed_file unquote(seed_file)
       # Any stable 64-bit integer; phash2 over the app name keeps it stable
       # across builds without anyone having to remember a magic number.
@@ -146,7 +153,7 @@ defmodule Asas.Release do
               %{rows: [[true]]},
               Ecto.Adapters.SQL.query!(
                 repo,
-                "SELECT EXISTS (SELECT 1 FROM #{@seeded_check}#{if @seeded_where, do: " WHERE " <> @seeded_where, else: ""})"
+                "SELECT EXISTS (SELECT 1 FROM #{@seeded_check}#{@seeded_where_sql})"
               )
             )
           else
